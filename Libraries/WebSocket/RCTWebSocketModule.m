@@ -63,6 +63,8 @@ RCT_EXPORT_MODULE()
 RCT_EXPORT_METHOD(connect:(NSURL *)URL protocols:(NSArray *)protocols options:(NSDictionary *)options socketID:(nonnull NSNumber *)socketID)
 {
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:URL];
+  NSNumber *pingInterval = options[@"pingInterval"];
+  NSTimeInterval pingIntervalValue = pingInterval ? pingInterval.doubleValue / 1000 : 0;
 
   // We load cookies from sharedHTTPCookieStorage (shared with XHR and
   // fetch). To get secure cookies for wss URLs, replace wss with https
@@ -81,7 +83,7 @@ RCT_EXPORT_METHOD(connect:(NSURL *)URL protocols:(NSArray *)protocols options:(N
     [request addValue:[RCTConvert NSString:value] forHTTPHeaderField:key];
   }];
 
-  RCTSRWebSocket *webSocket = [[RCTSRWebSocket alloc] initWithURLRequest:request protocols:protocols];
+  RCTSRWebSocket *webSocket = [[RCTSRWebSocket alloc] initWithURLRequest:request protocols:protocols pingInterval:pingIntervalValue];
   webSocket.delegate = self;
   webSocket.reactTag = socketID;
   if (!_sockets) {
