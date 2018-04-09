@@ -19,8 +19,8 @@
 #import <Availability.h>
 #import <Endian.h>
 
+#import <mach/mach_time.h>
 #import <Security/SecRandom.h>
-
 #import <CommonCrypto/CommonDigest.h>
 #import <React/RCTAssert.h>
 #import <React/RCTLog.h>
@@ -220,6 +220,11 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
   
   BOOL _cleanupScheduled;
 
+  NSTimeInterval _pingInterval;
+  uint64_t _lastPingTimestamp;
+  uint64_t _lastResponseTimestamp;
+
+
   NSMutableSet<NSArray *> *_scheduledRunloops;
 
   // We use this to retain ourselves.
@@ -229,7 +234,7 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
   RCTSRIOConsumerPool *_consumerPool;
 }
 
-- (instancetype)initWithURLRequest:(NSURLRequest *)request protocols:(NSArray<NSString *> *)protocols
+- (instancetype)initWithURLRequest:(NSURLRequest *)request protocols:(NSArray<NSString *> *)protocols pingInterval:(NSTimeInterval)pingInterval
 {
   RCTAssertParam(request);
 
@@ -238,6 +243,7 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
     _urlRequest = request;
 
     _requestedProtocols = [protocols copy];
+    _pingInterval = pingInterval;
 
     [self _RCTSR_commonInit];
   }
@@ -248,7 +254,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
 - (instancetype)initWithURLRequest:(NSURLRequest *)request;
 {
-  return [self initWithURLRequest:request protocols:nil];
+  return [self initWithURLRequest:request protocols:nil pingInterval:0];
 }
 
 - (instancetype)initWithURL:(NSURL *)URL;
@@ -275,7 +281,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
     NSArray<NSHTTPCookie *> *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:components.URL];
     [request setAllHTTPHeaderFields:[NSHTTPCookie requestHeaderFieldsWithCookies:cookies]];
   }
-  return [self initWithURLRequest:request protocols:protocols];
+  return [self initWithURLRequest:request protocols:protocols pingInterval:0];
 }
 
 - (void)_RCTSR_commonInit;
@@ -418,10 +424,48 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   }
 
   [self _performDelegateBlock:^{
+    if (_pingInterval > 0) {
+      // first ping is not delayed, subsequent pings are delayed by _pingInterval
+      [self dispatchPingWithTimeout:0];
+    }
+    
     if ([self.delegate respondsToSelector:@selector(webSocketDidOpen:)]) {
       [self.delegate webSocketDidOpen:self];
     };
   }];
+}
+
+- (void)dispatchPingWithTimeout:(NSTimeInterval)timeout
+{
+  __weak RCTSRWebSocket *weakSelf = self;
+  
+  dispatch_block_t block = ^ {
+    RCTSRWebSocket *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    
+    // Dropping the connection if we got no data since the last ping
+    if (_lastPingTimestamp > _lastResponseTimestamp) {
+      RCTLogInfo(@"No incoming data closing socket. Last ping time: %llu last incoming data time: %llu", _lastPingTimestamp, _lastResponseTimestamp);
+      [strongSelf _disconnect];
+    } else {
+      if (strongSelf.readyState == RCTSR_OPEN) {
+        RCTSRLog(@"Sending ping");
+        _lastPingTimestamp = mach_absolute_time();
+        [strongSelf sendPing:nil];
+      }
+    }
+  };
+  
+  dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t) timeout * NSEC_PER_SEC);
+  dispatch_after(popTime, _workQueue, ^{
+    block();
+    RCTSRWebSocket *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    
+    if (strongSelf.readyState == RCTSR_OPEN) {
+      [strongSelf dispatchPingWithTimeout:_pingInterval];
+    }
+  });
 }
 
 - (void)_readHTTPHeader;
@@ -673,6 +717,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
 - (void)handlePing:(NSData *)pingData;
 {
+  _lastResponseTimestamp = mach_absolute_time();
   // Need to pingpong this off _callbackQueue first to make sure messages happen in order
   [self _performDelegateBlock:^{
     dispatch_async(self->_workQueue, ^{
@@ -684,6 +729,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 - (void)handlePong:(NSData *)pongData;
 {
   RCTSRLog(@"Received pong");
+  _lastResponseTimestamp = mach_absolute_time();
   [self _performDelegateBlock:^{
     if ([self.delegate respondsToSelector:@selector(webSocket:didReceivePong:)]) {
       [self.delegate webSocket:self didReceivePong:pongData];
@@ -694,6 +740,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 - (void)_handleMessage:(id)message
 {
   RCTSRLog(@"Received message");
+  _lastResponseTimestamp = mach_absolute_time();
   [self _performDelegateBlock:^{
     [self.delegate webSocket:self didReceiveMessage:message];
   }];

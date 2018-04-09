@@ -7,6 +7,18 @@
 
 package com.facebook.react.modules.websocket;
 
+import javax.annotation.Nullable;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.facebook.common.logging.FLog;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -15,22 +27,12 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.ReadableMapKeySetIterator;
-import com.facebook.react.bridge.ReadableType;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.common.ReactConstants;
 import com.facebook.react.module.annotations.ReactModule;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.facebook.react.modules.network.ForwardingCookieHandler;
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import javax.annotation.Nullable;
+
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -84,10 +86,13 @@ public final class WebSocketModule extends ReactContextBaseJavaModule {
     @Nullable final ReadableArray protocols,
     @Nullable final ReadableMap options,
     final int id) {
+    final WebSocketOptions socketOptions = new WebSocketOptions(options);
+
     OkHttpClient client = new OkHttpClient.Builder()
       .connectTimeout(10, TimeUnit.SECONDS)
       .writeTimeout(10, TimeUnit.SECONDS)
       .readTimeout(0, TimeUnit.MINUTES) // Disable timeouts for read
+      .pingInterval(socketOptions.getPingInterval(), TimeUnit.MILLISECONDS)
       .build();
 
     Request.Builder builder = new Request.Builder().tag(id).url(url);
@@ -97,26 +102,14 @@ public final class WebSocketModule extends ReactContextBaseJavaModule {
       builder.addHeader("Cookie", cookie);
     }
 
-    if (options != null && options.hasKey("headers") && options.getType("headers").equals(ReadableType.Map)) {
-
-      ReadableMap headers = options.getMap("headers");
-      ReadableMapKeySetIterator iterator = headers.keySetIterator();
-
-      if (!headers.hasKey("origin")) {
-        builder.addHeader("origin", getDefaultOrigin(url));
+    Iterator<Map.Entry<String, String>> headersIterator = socketOptions.getHeaders().entrySet()
+      .iterator();
+    while (headersIterator.hasNext()) {
+      Map.Entry<String, String> headerEntry = headersIterator.next();
+      builder.addHeader(headerEntry.getKey(), headerEntry.getValue());
       }
 
-      while (iterator.hasNextKey()) {
-        String key = iterator.nextKey();
-        if (ReadableType.String.equals(headers.getType(key))) {
-          builder.addHeader(key, headers.getString(key));
-        } else {
-          FLog.w(
-            ReactConstants.TAG,
-            "Ignoring: requested " + key + ", value not a string");
-        }
-      }
-    } else {
+    if (!socketOptions.getHeaders().containsKey("origin")) {
       builder.addHeader("origin", getDefaultOrigin(url));
     }
 
