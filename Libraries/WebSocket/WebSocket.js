@@ -58,6 +58,13 @@ const WEBSOCKET_EVENTS = [
 
 let nextWebSocketId = 0;
 
+type WebSocketOptions = { 
+  pingInterval?: number;
+  // Deprecated setting preserved for backward compatibility
+  origin? :string;
+  headers?: {[string]: string};
+};
+
 /**
  * Browser-compatible WebSockets implementation.
  *
@@ -95,28 +102,24 @@ class WebSocket extends EventTarget(...WEBSOCKET_EVENTS) {
   // `WebSocket.isAvailable` will return `false`, and WebSocket constructor will throw an error
   static isAvailable: boolean = !!WebSocketModule;
 
-  constructor(url: string, protocols: ?string | ?Array<string>, options: ?{headers?: {origin?: string}}) {
+  constructor(url: string, protocols: ?string | ?Array<string>, options: ?WebSocketOptions) {
     super();
     if (typeof protocols === 'string') {
       protocols = [protocols];
     }
 
-    const {headers = {}, ...unrecognized} = options || {};
+    const { headers = {}, pingInterval, origin, unrecognized } = options || {};
 
     // Preserve deprecated backwards compatibility for the 'origin' option
     /* $FlowFixMe(>=0.68.0 site=react_native_fb) This comment suppresses an
      * error found when Flow v0.68 was deployed. To see the error delete this
      * comment and run Flow. */
-    if (unrecognized && typeof unrecognized.origin === 'string') {
+    if (origin && typeof origin === 'string') {
       console.warn('Specifying `origin` as a WebSocket connection option is deprecated. Include it under `headers` instead.');
       /* $FlowFixMe(>=0.54.0 site=react_native_fb,react_native_oss) This
        * comment suppresses an error found when Flow v0.54 was deployed. To see
        * the error delete this comment and run Flow. */
-      headers.origin = unrecognized.origin;
-      /* $FlowFixMe(>=0.54.0 site=react_native_fb,react_native_oss) This
-       * comment suppresses an error found when Flow v0.54 was deployed. To see
-       * the error delete this comment and run Flow. */
-      delete unrecognized.origin;
+      headers.origin = origin;
     }
 
     // Warn about and discard anything else
@@ -137,7 +140,7 @@ class WebSocket extends EventTarget(...WEBSOCKET_EVENTS) {
     this._eventEmitter = new NativeEventEmitter(WebSocketModule);
     this._socketId = nextWebSocketId++;
     this._registerEvents();
-    WebSocketModule.connect(url, protocols, { headers }, this._socketId);
+    WebSocketModule.connect(url, protocols, { headers, pingInterval }, this._socketId);
   }
 
   get binaryType(): ?BinaryType {
