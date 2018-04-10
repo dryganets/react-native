@@ -19,8 +19,8 @@
 #import <Availability.h>
 #import <Endian.h>
 
+#import <mach/mach_time.h>
 #import <Security/SecRandom.h>
-
 #import <CommonCrypto/CommonDigest.h>
 #import <React/RCTAssert.h>
 #import <React/RCTLog.h>
@@ -217,6 +217,9 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
   int _closeCode;
 
   BOOL _isPumping;
+  NSTimeInterval _pingInterval;
+  uint64_t _lastPingTimestamp;
+  uint64_t _lastResponseTimestamp;
 
   NSMutableSet<NSArray *> *_scheduledRunloops;
 
@@ -227,7 +230,7 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
   RCTSRIOConsumerPool *_consumerPool;
 }
 
-- (instancetype)initWithURLRequest:(NSURLRequest *)request protocols:(NSArray<NSString *> *)protocols
+- (instancetype)initWithURLRequest:(NSURLRequest *)request protocols:(NSArray<NSString *> *)protocols pingInterval:(NSTimeInterval)pingInterval
 {
   RCTAssertParam(request);
 
@@ -236,6 +239,7 @@ typedef void (^data_callback)(RCTSRWebSocket *webSocket,  NSData *data);
     _urlRequest = request;
 
     _requestedProtocols = [protocols copy];
+    _pingInterval = pingInterval;
 
     [self _RCTSR_commonInit];
   }
@@ -246,7 +250,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
 - (instancetype)initWithURLRequest:(NSURLRequest *)request;
 {
-  return [self initWithURLRequest:request protocols:nil];
+  return [self initWithURLRequest:request protocols:nil pingInterval:0];
 }
 
 - (instancetype)initWithURL:(NSURL *)URL;
@@ -273,7 +277,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
     NSArray<NSHTTPCookie *> *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:components.URL];
     [request setAllHTTPHeaderFields:[NSHTTPCookie requestHeaderFieldsWithCookies:cookies]];
   }
-  return [self initWithURLRequest:request protocols:protocols];
+  return [self initWithURLRequest:request protocols:protocols pingInterval:0];
 }
 
 - (void)_RCTSR_commonInit;
@@ -394,7 +398,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   NSInteger responseCode = CFHTTPMessageGetResponseStatusCode(_receivedHTTPHeaders);
 
   if (responseCode >= 400) {
-    RCTSRLog(@"Request failed with response code %ld", responseCode);
+    RCTLogInfo(@"Request failed with response code %ld", (long)responseCode);
     [self _failWithError:[NSError errorWithDomain:RCTSRWebSocketErrorDomain code:2132 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"received bad response code from server %ld", (long)responseCode], RCTSRHTTPResponseErrorKey:@(responseCode)}]];
     return;
   }
@@ -422,10 +426,48 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   }
 
   [self _performDelegateBlock:^{
+    if (_pingInterval > 0) {
+      // first ping is not delayed, subsequent pings are delayed by _pingInterval
+      [self dispatchPingWithTimeout:0];
+    }
+    
     if ([self.delegate respondsToSelector:@selector(webSocketDidOpen:)]) {
       [self.delegate webSocketDidOpen:self];
     };
   }];
+}
+
+- (void)dispatchPingWithTimeout:(NSTimeInterval)timeout
+{
+  __weak RCTSRWebSocket *weakSelf = self;
+  
+  dispatch_block_t block = ^ {
+    RCTSRWebSocket *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    
+    // Dropping the connection if we got no data since the last ping
+    if (_lastPingTimestamp > _lastResponseTimestamp) {
+      RCTLogInfo(@"No incoming data closing socket. Last ping time: %llu last incoming data time: %llu", _lastPingTimestamp, _lastResponseTimestamp);
+      [strongSelf _disconnect];
+    } else {
+      if (strongSelf.readyState == RCTSR_OPEN) {
+        RCTSRLog(@"Sending ping");
+        _lastPingTimestamp = mach_absolute_time();
+        [strongSelf sendPing:nil];
+      }
+    }
+  };
+  
+  dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t) timeout * NSEC_PER_SEC);
+  dispatch_after(popTime, _workQueue, ^{
+    block();
+    RCTSRWebSocket *strongSelf = weakSelf;
+    if (strongSelf == nil) return;
+    
+    if (strongSelf.readyState == RCTSR_OPEN) {
+      [strongSelf dispatchPingWithTimeout:_pingInterval];
+    }
+  });
 }
 
 - (void)_readHTTPHeader;
@@ -448,7 +490,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
 - (void)didConnect
 {
-  RCTSRLog(@"Connected");
+  RCTLogInfo(@"Connected");
   CFHTTPMessageRef request = CFHTTPMessageCreateRequest(NULL, CFSTR("GET"), (__bridge CFURLRef)_url, kCFHTTPVersion1_1);
 
   // Set host first so it defaults
@@ -571,7 +613,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
     self.readyState = RCTSR_CLOSING;
 
-    RCTSRLog(@"Closing with code %ld reason %@", code, reason);
+    RCTLogInfo(@"Closing with code %ld reason %@", (long)code, reason);
 
     if (wasConnecting) {
       [self _disconnect];
@@ -628,7 +670,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
       self.readyState = RCTSR_CLOSED;
       self->_selfRetain = nil;
 
-      RCTSRLog(@"Failing with error %@", error.localizedDescription);
+      RCTLogInfo(@"Failing with error %@", error.localizedDescription);
 
       [self _disconnect];
     }
@@ -676,6 +718,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 
 - (void)handlePing:(NSData *)pingData;
 {
+  _lastResponseTimestamp = mach_absolute_time();
   // Need to pingpong this off _callbackQueue first to make sure messages happen in order
   [self _performDelegateBlock:^{
     dispatch_async(self->_workQueue, ^{
@@ -687,6 +730,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 - (void)handlePong:(NSData *)pongData;
 {
   RCTSRLog(@"Received pong");
+  _lastResponseTimestamp = mach_absolute_time();
   [self _performDelegateBlock:^{
     if ([self.delegate respondsToSelector:@selector(webSocket:didReceivePong:)]) {
       [self.delegate webSocket:self didReceivePong:pongData];
@@ -697,6 +741,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 - (void)_handleMessage:(id)message
 {
   RCTSRLog(@"Received message");
+  _lastResponseTimestamp = mach_absolute_time();
   [self _performDelegateBlock:^{
     [self.delegate webSocket:self didReceiveMessage:message];
   }];
@@ -742,7 +787,7 @@ static inline BOOL closeCodeIsValid(int closeCode)
   size_t dataSize = data.length;
   __block uint16_t closeCode = 0;
 
-  RCTSRLog(@"Received close frame");
+  RCTLogInfo(@"Received close frame");
 
   if (dataSize == 1) {
     // TODO: handle error
@@ -779,7 +824,7 @@ static inline BOOL closeCodeIsValid(int closeCode)
 - (void)_disconnect;
 {
   [self assertOnWorkQueue];
-  RCTSRLog(@"Trying to disconnect");
+  RCTLogInfo(@"Trying to disconnect");
   _closeWhenFinishedWriting = YES;
   [self _pumpWriting];
 }
