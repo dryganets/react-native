@@ -14,6 +14,7 @@
 #include "CxxModuleWrapper.h"
 #include "JavaScriptExecutorHolder.h"
 #include "JCallback.h"
+#include "JSLogging.h"
 #include "NativeDeltaClient.h"
 #include "ProxyExecutor.h"
 #include "WritableNativeArray.h"
@@ -83,6 +84,7 @@ class ProxyJavaScriptExecutorHolder : public HybridClass<ProxyJavaScriptExecutor
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
   return initialize(vm, [] {
     gloginit::initialize();
+    JSLogging::registerNatives();
     JSCJavaScriptExecutorHolder::registerNatives();
     ProxyJavaScriptExecutorHolder::registerNatives();
     CatalystInstanceImpl::registerNatives();
