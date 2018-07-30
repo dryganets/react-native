@@ -95,7 +95,7 @@ JSValueRef nativeLoggingHook(
   }
   if (argumentCount > 0) {
     String message = Value(ctx, arguments[0]).toString();
-    reactAndroidLoggingHook(message.str(), logLevel);
+    JSLogging::reactAndroidLoggingHook(message.str(), logLevel);
   }
   return Value::makeUndefined(ctx);
 }
