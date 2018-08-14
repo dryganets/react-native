@@ -82,7 +82,7 @@ void injectJSCExecutorAndroidPlatform() {
   // Inject some behavior into react/
   JReactMarker::setLogPerfMarkerIfNeeded();
   ExceptionHandling::platformErrorExtractor = extractJniError;
-  JSCNativeHooks::loggingHook = nativeLoggingHook;
+  JSCNativeHooks::loggingHook = JSLogging::nativeLoggingHook;
   JSCNativeHooks::nowHook = nativePerformanceNow;
   JSCNativeHooks::installPerfHooks = addNativePerfLoggingHooks;
 }

@@ -6,6 +6,7 @@
 
 namespace facebook {
 namespace react {
+namespace JSLogging {
 
 JSValueRef nativeLoggingHook(
     JSContextRef ctx,
@@ -14,4 +15,6 @@ JSValueRef nativeLoggingHook(
     size_t argumentCount,
     const JSValueRef arguments[], JSValueRef *exception);
 
-}}
+void registerNatives();
+
+}}}
